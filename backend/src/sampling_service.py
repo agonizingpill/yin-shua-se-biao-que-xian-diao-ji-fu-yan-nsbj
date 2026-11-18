@@ -4,6 +4,7 @@ from .models import PrintJob,ProofSheet
 from .production_models import PressSample,PressHold
 from .services import get,audit,now,pack
 from .plate_service import require_ready
+from .instrument_service import pin_instrument,require_valid_calibration
 
 def queue(s,proof,r):
     # Save before enqueue so the worker can see the new proof. A failed queue write
@@ -25,8 +26,9 @@ def sample(s,p,u,r):
     last=s.scalar(select(func.max(PressSample.sequence)).where(PressSample.job_id==job.id)) or 0
     if p.sequence<=last:raise HTTPException(409,'抽检序号须递增，不得重复或倒序')
     if s.scalar(select(ProofSheet).where(ProofSheet.code==p.code)):raise HTTPException(409,'量产抽检必须使用新的唯一色标编号')
-    values=p.model_dump();seq=values.pop('sequence');qty=values.pop('quantity')
+    values=p.model_dump();seq=values.pop('sequence');qty=values.pop('quantity');meter_id=values.pop('meter_id')
     proof=ProofSheet(**values,classification_state='classifying');s.add(proof);s.flush()
+    pin_instrument(s,proof,meter_id)
     item=PressSample(job_id=job.id,proof_id=proof.id,plate_id=plate.id,sequence=seq,quantity=qty,plate_snapshot={'version':plate.version,'registration_error_mm':plate.registration_error_mm,'source_note':plate.source_note,'approved_by':plate.approved_by});s.add(item)
     audit(s,u,f'量产抽检 工单{job.code} 序{seq} 已印{qty}张 色标{proof.code}');queue(s,proof,r);return item
 
@@ -46,7 +48,8 @@ def recheck(s,key,p,u,r):
     if p.job_id!=job.id:raise HTTPException(409,'复机色标必须来自停机单同一工单')
     if hold.reproof_id and get(s,ProofSheet,hold.reproof_id).classification_state=='classifying':raise HTTPException(409,'上一张复验仍在判读，请等待')
     if s.scalar(select(ProofSheet).where(ProofSheet.code==p.code)):raise HTTPException(409,'停机后须重新取样，不能复用已有色标')
-    proof=ProofSheet(**p.model_dump(),classification_state='classifying');s.add(proof);s.flush();hold.reproof_id=proof.id;hold.reproof_ids=[*(hold.reproof_ids or []),proof.id]
+    values=p.model_dump();meter_id=values.pop('meter_id')
+    proof=ProofSheet(**values,classification_state='classifying');s.add(proof);s.flush();pin_instrument(s,proof,meter_id);hold.reproof_id=proof.id;hold.reproof_ids=[*(hold.reproof_ids or []),proof.id]
     audit(s,u,f'停机复验 {key} 新色标{p.code}');queue(s,proof,r);return hold
 
 def close(s,key,p,u):
@@ -56,5 +59,6 @@ def close(s,key,p,u):
     if not hold.reproof_id:raise HTTPException(409,'须登记停机后的新色标复验')
     proof=get(s,ProofSheet,hold.reproof_id)
     if proof.job_id!=job.id or proof.classification_state!='classified' or not proof.pass_flag or proof.defect!='合格' or not proof.classified_at or proof.classified_at<hold.created_at:raise HTTPException(409,'停机后新色标未判为合格，不能复机')
+    require_valid_calibration(s,proof)
     hold.state='closed';hold.resolution=p.resolution;hold.closed_by=u.email;hold.closed_at=now();job.status='production'
     audit(s,u,f'主管复机 停机单{key} 依据{p.resolution}');s.commit();return hold

@@ -10,6 +10,7 @@ class JobInput(BaseModel):
 class ProofInput(BaseModel):
     job_id:int
     code:str=Field(min_length=1,max_length=40)
+    meter_id:int
     density_c:float=Field(ge=0,le=3)
     density_m:float=Field(ge=0,le=3)
     density_y:float=Field(ge=0,le=3)

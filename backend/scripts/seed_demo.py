@@ -5,6 +5,8 @@ from src.models import User,PrintJob,ProofSheet,Adjustment,ReferenceSheet
 from src.auth import hash_password
 from src.production_models import PlateSet,PressSample,PressHold
 from src.dispatch_models import PaperLot,PressMachine
+from src.instrument_models import Densitometer,Calibration,CalibrationSheet
+from src.services import now
 
 def seed():
     Base.metadata.create_all(engine)
@@ -27,5 +29,16 @@ def seed():
         for code,gsm,qty in [('PAPER-157-A',157,20000),('PAPER-128-A',128,8000)]:
             if not s.scalar(select(PaperLot).where(PaperLot.code==code)):s.add(PaperLot(code=code,gsm=gsm,available_sheets=qty))
         if not s.scalar(select(PressMachine).where(PressMachine.code=='PRESS-04')):s.add(PressMachine(code='PRESS-04'))
+        if not s.scalar(select(Densitometer).where(Densitometer.code=='DENS-REF-01')):s.add(Densitometer(code='DENS-REF-01',kind='reference',state='active',note='基准密度计，年度溯源，定义色标尺度'))
+        if not s.scalar(select(Densitometer).where(Densitometer.code=='DENS-NEW-07')):s.add(Densitometer(code='DENS-NEW-07',kind='working',state='disabled',note='新购密度计，读数系统性偏高，待校准验收'))
+        s.flush();new_meter=s.scalar(select(Densitometer).where(Densitometer.code=='DENS-NEW-07'))
+        if not s.scalar(select(Calibration).where(Calibration.meter_id==new_meter.id,Calibration.version==1)):
+            cal=Calibration(meter_id=new_meter.id,version=1,state='draft',created_at=now());s.add(cal);s.flush()
+            crng=random.Random(2026);scale=[1.1,1.1,1.08,1.1,1.15];offset=[.25,.22,.24,.23,4.0]
+            for i in range(18):
+                means=[[1.4,1.4,1.4,1.4,14],[1.02,1.04,1.0,1.05,28],[1.7,1.1,1.55,1.4,15]][i%3]
+                ref=[round(crng.gauss(m,.02 if j<4 else .8),4)for j,m in enumerate(means)]
+                new=[round(ref[j]*scale[j]+offset[j]+crng.gauss(0,.008 if j<4 else .3),4)for j in range(5)]
+                s.add(CalibrationSheet(calibration_id=cal.id,code=f'CAL-{i+1:02}',ref_c=ref[0],ref_m=ref[1],ref_y=ref[2],ref_k=ref[3],ref_gain=ref[4],new_c=new[0],new_m=new[1],new_y=new[2],new_k=new[3],new_gain=new[4]))
         s.commit();print({t.__tablename__:s.scalar(select(func.count()).select_from(t))for t in (User,PrintJob,ProofSheet,Adjustment,ReferenceSheet)})
 if __name__=='__main__':seed()

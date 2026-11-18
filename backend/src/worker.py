@@ -6,14 +6,25 @@ from .models import ProofSheet
 from .classifier import classify
 from .services import now
 from .sampling_service import finish
+from .instrument_models import Calibration
+from .calibrator import evaluate
 r=redis.Redis.from_url(os.environ['REDIS_URL'],decode_responses=True);Path('/artifacts').mkdir(exist_ok=True)
 while True:
-    Path('/tmp/worker-heartbeat').touch();entry=r.blpop('press-classify',timeout=2)
+    Path('/tmp/worker-heartbeat').touch();entry=r.blpop(['press-classify','press-calibrate'],timeout=2)
     if not entry:continue
+    queue,key=entry
     with Session()as s:
-        p=s.get(ProofSheet,int(entry[1]))
+        if queue=='press-calibrate':
+            cal=s.get(Calibration,int(key))
+            if not cal or cal.state!='fitting':continue
+            try:
+                evaluate(s,cal);s.commit();Path(f'/artifacts/calibration-{cal.id}.json').write_text(json.dumps({'fit':cal.fit,'acceptance':cal.acceptance},ensure_ascii=False))
+            except Exception as ex:
+                s.rollback();cal=s.get(Calibration,int(key));cal.state='failed';cal.acceptance={'error':str(ex)};s.commit();logging.exception('calibration evaluation failed')
+            continue
+        p=s.get(ProofSheet,int(key))
         if not p or p.classification_state!='classifying':continue
         try:
             p.defect,p.evidence=classify(s,p);p.pass_flag=p.defect=='合格';p.classification_state='classified';p.classified_at=now();finish(s,p);s.commit();Path(f'/artifacts/proof-{p.id}.json').write_text(json.dumps(p.evidence,ensure_ascii=False))
         except Exception as ex:
-            s.rollback();p=s.get(ProofSheet,int(entry[1]));p.classification_state='failed';p.evidence={'error':str(ex)};finish(s,p);s.commit();logging.exception('classification failed')
+            s.rollback();p=s.get(ProofSheet,int(key));p.classification_state='failed';p.evidence={'error':str(ex)};finish(s,p);s.commit();logging.exception('classification failed')

@@ -39,6 +39,8 @@ def sign(s,aid,reproof_id,user):
     if p.id==a.proof_id or p.job_id!=job.id:raise HTTPException(409,'复验张必须来自同一工单且不同于首张')
     if p.classification_state!='classified'or not p.pass_flag or p.defect!='合格':raise HTTPException(409,'复验张未判为合格，禁止恢复量产')
     if not p.classified_at or p.classified_at<a.executed_at:raise HTTPException(409,'复验判读必须在调机执行之后完成')
+    from .instrument_service import require_valid_calibration
+    require_valid_calibration(s,p)
     from .plate_service import require_ready
     require_ready(s,job.id)
     a.reproof_id=p.id;a.status='signed';a.signed_by=user.email;job.status='production';return a
